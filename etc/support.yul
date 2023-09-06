@@ -31,13 +31,13 @@ function __mutex_unlock() {
   }
 }
 
-function __check_memory_array(ptr, unit, pos) {
+function __check_memory_array(ptr, unit, start) {
   @if defined(INLINE_ASM) {
     if shr(32, ptr) {
       revert(0, 0)
     }
 
-    if shr(32, mload(add(ptr, pos))) {
+    if shr(32, mload(add(ptr, start))) {
       revert(0, 0)
     }
   } else {
@@ -47,7 +47,7 @@ function __check_memory_array(ptr, unit, pos) {
       revert(0, 0)
     }
 
-    ptr := add(ptr, pos)
+    ptr := add(ptr, start)
 
     if gt(add(ptr, 32), size) { // (ptr + 32 <= size)
       revert(0, 0)
@@ -67,7 +67,61 @@ function __check_memory_array(ptr, unit, pos) {
   }
 }
 
-function __check_calldata_array(off, unit) {
+function __check_memory_nested(ptr, start) {
+  // Check bounds for bytes[] and string[] types.
+  @if defined(INLINE_ASM) {
+    if shr(32, ptr) {
+      revert(0, 0)
+    }
+
+    ptr := add(ptr, start)
+
+    let len := mload(ptr)
+
+    if shr(32, len) {
+      revert(0, 0)
+    }
+
+    let pos := add(ptr, 32)
+
+    for { let i := 0 } lt(i, len) { i := add(i, 1) } {
+      __check_memory_array(mload(pos), 1, add(ptr, 32))
+      pos := add(pos, 32)
+    }
+  } else {
+    let size := msize()
+
+    if shr(32, ptr) {
+      revert(0, 0)
+    }
+
+    ptr := add(ptr, start)
+
+    if gt(add(ptr, 32), size) { // (ptr + 32 <= size)
+      revert(0, 0)
+    }
+
+    let len := mload(ptr)
+
+    if shr(32, len) {
+      revert(0, 0)
+    }
+
+    // (ptr + 32 + len * 32 <= size)
+    if gt(add(add(ptr, 32), mul(len, 32)), size) {
+      revert(0, 0)
+    }
+
+    let pos := add(ptr, 32)
+
+    for { let i := 0 } lt(i, len) { i := add(i, 1) } {
+      __check_memory_array(mload(pos), 1, add(ptr, 32))
+      pos := add(pos, 32)
+    }
+  }
+}
+
+function __check_calldata_array(off, unit, start) {
   let size := calldatasize()
   let ptr := calldataload(off)
 
@@ -75,7 +129,7 @@ function __check_calldata_array(off, unit) {
     revert(0, 0)
   }
 
-  ptr := add(ptr, 4)
+  ptr := add(ptr, start)
 
   if gt(add(ptr, 32), size) { // (ptr + 32 <= size)
     revert(0, 0)
@@ -91,6 +145,39 @@ function __check_calldata_array(off, unit) {
 
   if gt(add(add(ptr, 32), len), size) { // (ptr + 32 + len <= size)
     revert(0, 0)
+  }
+}
+
+function __check_calldata_nested(off, start) {
+  // Check bounds for bytes[] and string[] types.
+  let size := calldatasize()
+  let ptr := calldataload(off)
+
+  if shr(32, ptr) {
+    revert(0, 0)
+  }
+
+  ptr := add(ptr, start)
+
+  if gt(add(ptr, 32), size) { // (ptr + 32 <= size)
+    revert(0, 0)
+  }
+
+  let len := calldataload(ptr)
+
+  if shr(32, len) {
+    revert(0, 0)
+  }
+
+  if gt(add(add(ptr, 32), mul(len, 32)), size) { // ptr + 32 + len * 32 <= size
+    revert(0, 0)
+  }
+
+  let pos := add(ptr, 32)
+
+  for { let i := 0 } lt(i, len) { i := add(i, 1) } {
+    __check_calldata_array(pos, 1, add(ptr, 32))
+    pos := add(pos, 32)
   }
 }
 
