@@ -34,6 +34,7 @@ const HELP = `
     -A, --ast              output ast
     -P, --prettify         prettify without transpiling
     -t, --transpile        transpile only
+    -w, --wrap             wrap yul inside solidity (experimental)
     --abi                  output abi
     --json-abi             use solc abi format
     --interface            output solidity interface file
@@ -330,6 +331,7 @@ function parseArgs(argv) {
     solc: process.env.SOLC || 'solc',
     hardfork: 'london',
     action: 'compile',
+    wrapping: false,
     input: null,
     output: '-',
     decl: null,
@@ -435,6 +437,12 @@ function parseArgs(argv) {
         break;
       }
 
+      case '-w':
+      case '--wrap': {
+        options.wrapping = true;
+        break;
+      }
+
       case '--abi': {
         options.action = 'abi';
         break;
@@ -536,6 +544,7 @@ function parseArgs(argv) {
             options.debug = !value;
             break;
           case 'EVM_VERSION':
+          case 'INLINE_ASM':
             throw new Error(`Invalid macro name: ${name}`);
           default:
             options.macros.push([name, expr]);
@@ -726,9 +735,12 @@ function parseArgs(argv) {
   }
 
   switch (options.action) {
+    case 'transpile':
     case 'compile':
     case 'dump':
     case 'verify':
+      if (options.action === 'transpile' && !options.wrapping)
+        break;
       options.versions.solc = solcVersion(options.solc);
       options.versions.yulc = VERSION;
       break;
@@ -885,6 +897,7 @@ function compile(options) {
   const basename = path.basename(output);
   const result = transpileFile(input, options);
   const abi = result.abi.toJSON(options.solabi);
+  const ext = options.wrapping ? '.out.sol' : '.out.yul';
 
   if (output !== '-') {
     if (!output.endsWith('.json'))
@@ -896,7 +909,7 @@ function compile(options) {
     mkdirp(builddir, 0o755);
 
     if (options.tmpdir) {
-      const tmpname = basename.slice(0, -5) + '.out.yul';
+      const tmpname = basename.slice(0, -5) + ext;
       const tmpdir = path.join(builddir, 'tmp');
       const tmpfile = path.join(tmpdir, tmpname);
 
@@ -906,6 +919,7 @@ function compile(options) {
   }
 
   const {name, evm} = solc(options.solc, input, {
+    language: options.wrapping ? 'Solidity' : 'Yul',
     source: { content: result.code },
     hardfork: options.hardfork,
     runs: options.runs,
@@ -989,6 +1003,7 @@ function dump(options) {
   }
 
   const contract = solc(options.solc, input, {
+    language: options.wrapping ? 'Solidity' : 'Yul',
     source: {
       content: result.code
     },
@@ -1128,6 +1143,7 @@ async function verify(options) {
   const result = transpileFile(input, options);
 
   const {evm} = solc(options.solc, input, {
+    language: options.wrapping ? 'Solidity' : 'Yul',
     source: {
       content: result.code
     },
@@ -1208,6 +1224,7 @@ async function submit(options) {
   const result = transpileFile(input, options);
 
   const contract = solc(options.solc, input, {
+    language: options.wrapping ? 'Solidity' : 'Yul',
     source: { content: result.code },
     hardfork: options.hardfork,
     runs: options.runs,
@@ -1334,22 +1351,25 @@ async function submitProxy(options) {
 function solc(arg0, filename, opts = {}) {
   // Yul became stable in v0.8.13 (Mar 2022).
   const warn = 'Yul is still experimental. Please use the output with care.';
+  const ext = opts.language === 'Solidity' ? '.out.sol' : '.out.yul';
 
   let id = '<stdin>';
 
   if (filename !== '/dev/stdin') {
     id = path.relative(process.cwd(), filename);
-    id = id.slice(0, -4) + '.out.yul';
+    id = id.slice(0, -4) + ext;
   }
 
   // https://docs.soliditylang.org/en/v0.8.20/using-the-compiler.html#input-description
   const options = {
-    language: 'Yul',
+    language: opts.language || 'Yul',
     sources: {
       [id]: opts.source
     },
     settings: {
       evmVersion: opts.hardfork,
+      viaIR: undefined,
+      metadata: undefined,
       outputSelection: {
         [id]: {
           '*': opts.outputs || [
@@ -1365,6 +1385,12 @@ function solc(arg0, filename, opts = {}) {
       optimizer: undefined
     }
   };
+
+  if (opts.language === 'Solidity') {
+    options.settings.viaIR = true;
+    options.settings.metadata = { bytecodeHash: 'ipfs' };
+    options.settings.outputSelection[id]['*'].push('abi', 'metadata');
+  }
 
   // https://github.com/ethereum/solidity/blob/e44b8b9/libsolidity/interface/StandardCompiler.cpp#L558
   if (opts.runs) {
@@ -1408,10 +1434,20 @@ function solc(arg0, filename, opts = {}) {
   const output = JSON.parse(stdout);
 
   if (output.errors) {
+    const ignored = new Set([
+      '2018', // Function state mutability can be restricted to pure
+      '3628', // Consider adding a receive ether function
+      '3805', // Pre-release compiler
+      '3860', // MAX_INITCODE_SIZE violation
+      '5574', // MAX_CODE_SIZE violation
+      '5667', // Unused parameter
+      '5740'  // Unreachable code
+    ]);
+
     let error = false;
 
     for (const err of output.errors) {
-      if (err.message !== warn)
+      if (err.message !== warn && !ignored.has(err.errorCode))
         console.error('%s', err.formattedMessage);
 
       if (err.severity === 'error')
@@ -1693,7 +1729,47 @@ function write(name, text) {
 
 function transpileFile(filename, options) {
   const input = fs.readFileSync(filename, 'utf8');
-  return yul.transpile(input, filename, options);
+  const result = yul.transpile(input, filename, options);
+
+  if (options.wrapping)
+    result.code = wrapResult(result.root, result, options);
+
+  return result;
+}
+
+const cache = new WeakMap();
+
+function wrapResult(root, result, options) {
+  return yul.wrap(root, result.abi, (root) => {
+    if (cache.has(root))
+      return cache.get(root);
+
+    const code = wrapResult(root, result, options);
+    const item = compileSimple(code, options, result.deopt);
+
+    cache.set(root, item);
+
+    return item;
+  });
+}
+
+function compileSimple(code, options, deopt) {
+  const {input} = options;
+
+  const {name, evm} = solc(options.solc, input, {
+    language: options.wrapping ? 'Solidity' : 'Yul',
+    source: { content: code },
+    hardfork: options.hardfork,
+    runs: options.runs,
+    debug: options.debug,
+    deopt: deopt
+  });
+
+  return {
+    name,
+    initcode: evm.bytecode.object,
+    bytecode: evm.deployedBytecode.object
+  };
 }
 
 async function rpcCall(url, method, params = []) {
