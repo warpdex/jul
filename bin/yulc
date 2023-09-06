@@ -14,7 +14,7 @@ const assert = require('assert');
 const cp = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const yul = require('./yul');
+const yul = require('../lib/yul');
 
 /*
  * Constants
