@@ -23,7 +23,7 @@
     "yulc": "./bin/yulc"
   },
   "scripts": {
-    "lint": "eslint lib/yul.js bin/yulc || exit 0",
+    "lint": "eslint lib/ bin/yulc || exit 0",
     "test": "bmocha --reporter spec test/*-test.js"
   },
   "devDependencies": {
