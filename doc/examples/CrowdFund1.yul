@@ -51,12 +51,14 @@ interface ERC20 {
  *         be output in `yulc --interface`.
  */
 object "CrowdFund" {
-  /**
-   * @param The ERC20 token address.
-   */
-  constructor(address token) { // Fancy `code {}` block.
-    require(token, "token == address(0)")
-    storeimmutable("token", token)
+  code {
+    /**
+     * @param The ERC20 token address.
+     */
+    constructor(address token) {
+      require(token, "token == address(0)")
+      storeimmutable("token", token)
+    }
     construct("Runtime")
   }
 
