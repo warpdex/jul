@@ -1,0 +1,1789 @@
+#!/usr/bin/env node
+
+/*!
+ * yulc - yul compiler
+ * Copyright (c) 2022-2023, Christopher Jeffrey (MIT License).
+ * https://github.com/chjj
+ */
+
+'use strict';
+
+process.title = 'yulc';
+
+const assert = require('assert');
+const cp = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const yul = require('./yul');
+
+/*
+ * Constants
+ */
+
+const VERSION = '0.0.0';
+
+const HELP = `
+  Usage: yulc [options] [file]
+
+  Options:
+
+    -v, --version          output the version number
+    --solc <path>          path to solc binary (default: $SOLC or 'solc')
+    --hardfork <name>      desired evm version (default: london)
+    -o, --output <file>    output file/directory
+    -A, --ast              output ast
+    -P, --prettify         prettify without transpiling
+    -t, --transpile        transpile only
+    --abi                  output abi
+    --json-abi             use solc abi format
+    --interface            output solidity interface file
+    --dump                 dump raw solc output (ir, bin, asm)
+    --asm                  output assembly
+    --bin                  output bytecode
+    --ir-optimized         output transpiled and solc-optimized yul
+    --opcodes              output opcodes
+    -H, --hash <decl>      compute abi hash for function/event
+    --hashes               output function signature hashes
+    --verify               verify deployed bytecode
+    --submit               submit and verify sources to explorer
+    --submit-proxy         verify proxy contract for explorer
+    --no-metadata          do not append code hash to metadata
+    -D[name][=[expr]]      macro definition
+    -O[level]              optimization level
+    -C, --contract <name>  select contract by name
+    --cherry-pick <name>   pick subobject to compile/transform
+    --no-builtins          do not include builtins
+    --production           disable debugging functions (assert, debug)
+    --use-tmpdir           use directory for .out.yul files
+    --use-abidir           use directory for .abi.json files
+    --use-ifacedir         use directory for solidity interface files
+    --network <name>       chain where bytecode resides (default: ethereum)
+    --provider <url>       custom provider for bytecode verification
+    --address <address>    contract address for bytecode verification
+    --proxy-impl <address> proxy implementation address for proxy verification
+    --explorer <url>       custom explorer for source submission
+    --api-key <key>        etherscan/blockscout api-key
+    --ctor-args <hex>      constructor arguments for source submission
+    -h, --help             output usage information
+`;
+
+/*
+ * Optimization Step Legend
+ *
+ *   'f' = BlockFlattener
+ *   'l' = CircularReferencesPruner
+ *   'c' = CommonSubexpressionEliminator
+ *   'C' = ConditionalSimplifier
+ *   'U' = ConditionalUnsimplifier
+ *   'n' = ControlFlowSimplifier
+ *   'D' = DeadCodeEliminator
+ *   'E' = EqualStoreEliminator
+ *   'v' = EquivalentFunctionCombiner
+ *   'e' = ExpressionInliner
+ *   'j' = ExpressionJoiner
+ *   's' = ExpressionSimplifier
+ *   'x' = ExpressionSplitter
+ *   'I' = ForLoopConditionIntoBody
+ *   'O' = ForLoopConditionOutOfBody
+ *   'o' = ForLoopInitRewriter
+ *   'i' = FullInliner
+ *   'g' = FunctionGrouper
+ *   'h' = FunctionHoister
+ *   'F' = FunctionSpecializer
+ *   'T' = LiteralRematerialiser
+ *   'L' = LoadResolver
+ *   'M' = LoopInvariantCodeMotion
+ *   'R' = ReasoningBasedSimplifier
+ *   'r' = UnusedAssignEliminator
+ *   'S' = UnusedStoreEliminator
+ *   'm' = Rematerialiser
+ *   'V' = SSAReverser
+ *   'a' = SSATransform
+ *   't' = StructuralSimplifier
+ *   'p' = UnusedFunctionParameterPruner
+ *   'u' = UnusedPruner
+ *   'd' = VarDeclInitializer
+ *
+ * https://docs.soliditylang.org/en/v0.8.20/internals/optimizer.html#optimizer
+ * https://docs.soliditylang.org/en/v0.8.20/internals/optimizer.html#optimizer-parameter-runs
+ * https://docs.soliditylang.org/en/v0.8.20/internals/optimizer.html#optimizer-steps
+ * https://github.com/ethereum/solidity/blob/e44b8b9/libyul/optimiser/Suite.cpp#L289
+ */
+
+/*
+ * Optimization Order:
+ *
+ * https://github.com/ethereum/solidity/blob/e44b8b9/libyul/optimiser/Suite.cpp#L135
+ *
+ *    1. Disambiguator
+ *    2. "hgfo" (FunctionHoister, FunctionGrouper,
+ *               BlockFlattener, ForLoopInitRewriter)
+ *    3. NameSimplifier
+ *    4. [OptimisationSequence]
+ *    5. "g" (FunctionGrouper)
+ *    6. StackCompressor (if not optimizing)
+ *    7. [OptimisationCleanupSequence]
+ *    8. "g" (FunctionGrouper)
+ *    9. ConstantOptimiser
+ *   10. StackCompressor (if optimizing)
+ *   11. StackLimitEvader (if optimizing or stackAllocation=true)
+ *   12. NameSimplifier
+ *   13. VarNameCleaner
+ *
+ * https://github.com/ethereum/solidity/blob/e44b8b9/libevmasm/Assembly.cpp#L342
+ *
+ *   14. Assembly::Inliner (if inliner=true)
+ *   15. Assembly::JumpdestRemover (if jumpdestRemover=true)
+ *   16. Assembly::PeepholeOptimiser (if peephole=true)
+ *   17. Assembly::BlockDeduplicator (if deduplicate=true)
+ *   18. Assembly::CommonSubexpressionEliminator (if cse=true)
+ *   19. Assembly::ConstantOptimiser (if constantOptimizer=true)
+ */
+
+// Only used once:
+// 'E' = EqualStoreEliminator
+// 'e' = ExpressionInliner
+// 'o' = ForLoopInitRewriter
+// 'i' = FullInliner
+// 'h' = FunctionHoister
+// 'F' = FunctionSpecializer
+// 'M' = LoopInvariantCodeMotion
+// 'R' = ReasoningBasedSimplifier (unused)
+// 'S' = UnusedStoreEliminator
+// 'p' = UnusedFunctionParameterPruner
+// 'd' = VarDeclInitializer
+
+/*
+ * Default Optimization Steps
+ * https://github.com/ethereum/solidity/blob/e44b8b9/libsolidity/interface/OptimiserSettings.h#L44
+ */
+
+const DEFAULT_STEPS = [
+  'dhfoDgvulfnTUtnIf',
+  '[',
+    'xa[r]EscLM',
+    'cCTUtTOntnfDIul',
+    'Lcul',
+    'Vcul [j]',
+    'Tpeul',
+    'xa[rul]',
+    'xa[r]cL',
+    'gvif',
+    'CTUca[r]LSsTFOtfDnca[r]Iulc',
+  ']',
+  'jmul[jul] VcTOcul jmul'
+].join('');
+
+const CLEANUP_STEPS = 'fDnTOc';
+
+/*
+ * Consensus Limits
+ */
+
+// https://eips.ethereum.org/EIPS/eip-170
+const MAX_CODE_SIZE = 0x6000; // 2**14 + 2**13
+
+// https://eips.ethereum.org/EIPS/eip-3860
+const MAX_INITCODE_SIZE = 2 * MAX_CODE_SIZE; // 49152
+
+/*
+ * Providers (for verification)
+ */
+
+const providers = {
+  __proto__: null,
+  'ethereum': 'https://cloudflare-eth.com',
+  'goerli': 'https://rpc.ankr.com/eth_goerli',
+  'sepolia': 'https://rpc.ankr.com/eth_sepolia',
+  'binance': 'https://bsc-dataseed.binance.org',
+  'binance-testnet': 'https://data-seed-prebsc-1-s1.binance.org:8545',
+  'polygon': 'https://polygon-rpc.com',
+  'polygon-mumbai': 'https://rpc.ankr.com/polygon_mumbai',
+  'avalanche': 'https://api.avax.network/ext/bc/C/rpc',
+  'avalanche-fuji': 'https://api.avax-test.network/ext/bc/C/rpc',
+  'classic': 'https://etc.rivet.link',
+  'classic-mordor': 'https://rpc.mordor.etccooperative.org',
+  'fantom': 'https://rpc.fantom.network',
+  'fantom-testnet': 'https://rpc.testnet.fantom.network',
+  'celo': 'https://forno.celo.org',
+  'celo-alfajores': 'https://alfajores-forno.celo-testnet.org',
+  'oasis': 'https://emerald.oasis.dev',
+  'oasis-testnet': 'https://testnet.emerald.oasis.dev',
+  'gnosis': 'https://rpc.gnosischain.com',
+  'gnosis-chiado': 'https://rpc.chiadochain.net',
+  'optimism': 'https://mainnet.optimism.io',
+  'optimism-goerli': 'https://goerli.optimism.io',
+  'evmos': 'https://eth.bd.evmos.org:8545',
+  'evmos-testnet': 'https://eth.bd.evmos.dev:8545',
+  'canto': 'https://canto.slingshot.finance',
+  'canto-testnet': 'https://testnet-archive.plexnode.wtf',
+  'moonbeam': 'https://rpc.api.moonbeam.network',
+  'moonbase': 'https://rpc.api.moonbase.moonbeam.network',
+  'harmony': 'https://api.harmony.one',
+  'harmony-testnet': 'https://api.s0.b.hmny.io',
+  'aurora': 'https://mainnet.aurora.dev',
+  'aurora-testnet': 'https://testnet.aurora.dev',
+  'arbitrum': 'https://arb1.arbitrum.io/rpc',
+  'arbitrum-goerli': 'https://goerli-rollup.arbitrum.io/rpc',
+  'base': 'https://mainnet.base.org',
+  'base-goerli': 'https://goerli.base.org',
+  'rootstock': 'https://public-node.rsk.co',
+  'rootstock-testnet': 'https://public-node.testnet.rsk.co',
+  'devnet': 'http://localhost:8545'
+};
+
+/*
+ * Explorers (for submission)
+ */
+
+const explorers = {
+  __proto__: null,
+  'ethereum': 'https://api.etherscan.io',
+  'goerli': 'https://api-goerli.etherscan.io',
+  'sepolia': 'https://api-sepolia.etherscan.io',
+  'binance': 'https://api.bscscan.com',
+  'binance-testnet': 'https://api-testnet.bscscan.com',
+  'polygon': 'https://api.polygonscan.com',
+  'polygon-mumbai': 'https://api-testnet.polygonscan.com',
+  'avalanche': 'https://api.snowtrace.io',
+  'avalanche-fuji': 'https://api-testnet.snowtrace.io',
+  'classic': null,
+  'classic-mordor': null,
+  'fantom': 'https://api.ftmscan.com',
+  'fantom-testnet': 'https://api-testnet.ftmscan.com',
+  'celo': 'https://api.celoscan.io',
+  'celo-alfajores': 'https://api-alfajores.celoscan.io',
+  'oasis': null,
+  'oasis-testnet': null,
+  'gnosis': 'https://api.gnosisscan.io',
+  'gnosis-chiado': null,
+  'optimism': 'https://api-optimistic.etherscan.io',
+  'optimism-goerli': 'https://api-goerli-optimism.etherscan.io',
+  'evmos': null,
+  'evmos-testnet': null,
+  'canto': 'https://tuber.build',
+  'canto-testnet': 'https://testnet.tuber.build',
+  'moonbeam': 'https://api-moonbeam.moonscan.io',
+  'moonbase': 'https://api-moonbase.moonscan.io',
+  'harmony': null,
+  'harmony-testnet': null,
+  'aurora': null,
+  'aurora-testnet': null,
+  'arbitrum': 'https://api.arbiscan.io',
+  'arbitrum-goerli': 'https://api-goerli.arbiscan.io',
+  'base': 'https://api.basescan.org',
+  'base-goerli': 'https://goerli.basescan.org',
+  'rootstock': null,
+  'rootstock-testnet': null,
+  'devnet': null
+};
+
+/*
+ * Etherscan License Map
+ */
+
+// https://docs.soliditylang.org/en/v0.6.8/layout-of-source-files.html
+// https://spdx.org/licenses
+// https://etherscan.io/contract-license-types
+const licenseMap = {
+  __proto__: null,
+  'UNLICENSED': 1, // All Rights Reserved
+  'UNLICENSE': 2, // Public Domain
+  'MIT': 3,
+  'GPL-2.0': 4,
+  'GPL-3.0': 5,
+  'LGPL-2.1': 6,
+  'LGPL-3.0': 7,
+  'BSD-2-Clause': 8,
+  'BSD-3-Clause': 9,
+  'MPL-2.0': 10,
+  'OSL-3.0': 11,
+  'Apache-2.0': 12,
+  'AGPL-3.0': 13,
+  'BUSL-1.1': 14
+};
+
+/*
+ * Argument Parsing
+ */
+
+// Hardforks
+//
+// https://ethereum.org/en/history/
+// https://medium.com/mycrypto/the-history-of-ethereum-hard-forks-6a6dae76d56f
+//
+// Cancun (TBD) = TLOAD, TSTORE, MCOPY
+// Shanghai (Apr 2023) = PUSH0, MAX_INITCODE_SIZE
+// Paris (Sep 2022) = DIFFICULTY->PREVRANDAO (default in 0.8.18)
+// London (Aug 2021) = BASEFEE, EIP-1559
+// Berlin (Apr 2021) = SLOAD/SSTORE gas changes, EIP-2718, EIP-2930
+// Istanbul (Dec 2019) = BLAKE2F, CHAINID, calldata gas changes
+// Petersburg (Mar 2019) = Constantinople (minus EIP-1283)
+// Constantinople (Feb 2019) = SHL, SHR, SAR, CREATE2, EXTCODEHASH
+// Byzantium (Oct 2017) = REVERT, RETURNDATASIZE, RETURNDATACOPY, STATICCALL
+// Spurious Dragon (Nov 2016) = Replay protection, EXP gas, code size limit
+// Tangerine Whistle (Oct 2016) = Gas cost increases, state clearing
+// Homestead (Mar 2016) = DELEGATECALL
+
+function parseArgs(argv) {
+  const options = {
+    solc: process.env.SOLC || 'solc',
+    hardfork: 'london',
+    action: 'compile',
+    input: null,
+    output: '-',
+    decl: null,
+    macros: [],
+    runs: 0,
+    name: null,
+    pick: null,
+    builtins: true,
+    debug: true,
+    tmpdir: false,
+    abidir: false,
+    ifacedir: false,
+    solabi: false,
+    metadata: true,
+    network: 'ethereum',
+    provider: null,
+    address: null,
+    proxyImpl: null,
+    apiKey: null,
+    ctorArgs: '',
+    subarg: null,
+    versions: {
+      solc: null,
+      yulc: null
+    },
+    args: []
+  };
+
+  const args = getArgs(argv);
+
+  let done = false;
+
+  for (let i = 2; i < args.length; i++) {
+    const arg = args[i];
+
+    if (done) {
+      options.args.push(arg);
+      continue;
+    }
+
+    let next = '';
+
+    if (i + 1 < args.length)
+      next = args[i + 1];
+
+    switch (arg) {
+      case '-v':
+      case '--version': {
+        process.stdout.write(VERSION + '\n');
+        process.exit(0);
+        break;
+      }
+
+      case '--solc': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        options.solc = next;
+
+        i += 1;
+
+        break;
+      }
+
+      case '--hardfork': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        options.hardfork = next;
+
+        i += 1;
+
+        break;
+      }
+
+      case '-o':
+      case '--output': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        options.output = path.resolve(next);
+
+        i += 1;
+
+        break;
+      }
+
+      case '-A':
+      case '--ast': {
+        options.action = 'parse';
+        break;
+      }
+
+      case '-P':
+      case '--prettify': {
+        options.action = 'prettify';
+        break;
+      }
+
+      case '-t':
+      case '--transpile': {
+        options.action = 'transpile';
+        break;
+      }
+
+      case '--abi': {
+        options.action = 'abi';
+        break;
+      }
+
+      case '--json-abi': {
+        options.solabi = true;
+        break;
+      }
+
+      case '--interface': {
+        options.action = 'iface';
+        break;
+      }
+
+      case '--dump': {
+        options.action = 'dump';
+        options.subarg = null;
+        break;
+      }
+
+      case '--asm': {
+        options.action = 'dump';
+        options.subarg = 'evm.assembly';
+        break;
+      }
+
+      case '--bin': {
+        options.action = 'dump';
+        options.subarg = 'evm.bytecode.object';
+        break;
+      }
+
+      case '--ir':
+      case '--ir-optimized': {
+        options.action = 'dump';
+        options.subarg = 'irOptimized';
+        break;
+      }
+
+      case '--opcodes': {
+        options.action = 'dump';
+        options.subarg = 'evm.bytecode.opcodes';
+        break;
+      }
+
+      case '-H':
+      case '--hash': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        options.action = 'hash';
+        options.decl = next;
+
+        i += 1;
+
+        break;
+      }
+
+      case '--hashes': {
+        options.action = 'hashes';
+        break;
+      }
+
+      case '--verify': {
+        options.action = 'verify';
+        break;
+      }
+
+      case '--submit': {
+        options.action = 'submit';
+        break;
+      }
+
+      case '--submit-proxy': {
+        options.action = 'submit-proxy';
+        break;
+      }
+
+      case '--no-metadata': {
+        options.metadata = false;
+        break;
+      }
+
+      case '-D': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        const parts = next.split('=');
+        const name = parts[0];
+        const expr = parts.slice(1).join('=') || '1';
+        const value = (expr !== '0' && expr !== 'false');
+
+        switch (name) {
+          case 'DEBUG':
+            options.debug = value;
+            break;
+          case 'NDEBUG':
+            options.debug = !value;
+            break;
+          case 'EVM_VERSION':
+            throw new Error(`Invalid macro name: ${name}`);
+          default:
+            options.macros.push([name, expr]);
+            break;
+        }
+
+        i += 1;
+
+        break;
+      }
+
+      case '-O0': {
+        options.runs = 0;
+        break;
+      }
+
+      case '-O':
+      case '-O1': {
+        options.runs = 200;
+        break;
+      }
+
+      case '-O2': {
+        options.runs = 1000;
+        break;
+      }
+
+      case '-O3': {
+        options.runs = 2000;
+        break;
+      }
+
+      case '-C':
+      case '--contract': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        options.name = next;
+
+        i += 1;
+
+        break;
+      }
+
+      case '--cherry-pick': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        options.pick = next;
+
+        i += 1;
+
+        break;
+      }
+
+      case '--no-builtins': {
+        options.builtins = false;
+        break;
+      }
+
+      case '--production': {
+        options.debug = false;
+        break;
+      }
+
+      case '--use-tmpdir': {
+        options.tmpdir = true;
+        break;
+      }
+
+      case '--use-abidir': {
+        options.abidir = true;
+        break;
+      }
+
+      case '--use-ifacedir': {
+        options.ifacedir = true;
+        break;
+      }
+
+      case '--network': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        options.network = next;
+
+        i += 1;
+
+        break;
+      }
+
+      case '--explorer':
+      case '--provider': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        if (!/^https?:\/\//i.test(next))
+          throw new Error('Provider must be a URL.');
+
+        options.provider = next;
+
+        i += 1;
+
+        break;
+      }
+
+      case '--address':
+      case '--proxy-impl': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        if (!/^0x[0-9A-Fa-f]{40}$/.test(next))
+          throw new Error('Invalid address.');
+
+        if (arg === '--address')
+          options.address = next;
+        else
+          options.proxyImpl = next;
+
+        i += 1;
+
+        break;
+      }
+
+      case '--api-key': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        options.apiKey = next;
+
+        i += 1;
+
+        break;
+      }
+
+      case '--ctor-args': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        if (!/^(?:[0-9A-Fa-f]{2})*$/.test(next))
+          throw new Error('Invalid constructor arguments.');
+
+        options.ctorArgs = next;
+
+        i += 1;
+
+        break;
+      }
+
+      case '-h':
+      case '--help': {
+        process.stdout.write(HELP + '\n');
+        process.exit(0);
+        break;
+      }
+
+      case '--': {
+        done = true;
+        break;
+      }
+
+      case '-': {
+        if (options.input)
+          throw new Error(`Invalid argument: ${arg}.`);
+
+        options.input = '/dev/stdin';
+
+        break;
+      }
+
+      default: {
+        if (arg.length === 0 || arg[0] === '-' || options.input)
+          throw new Error(`Invalid argument: ${arg}.`);
+
+        if (!arg.endsWith('.yul') || arg.endsWith('.out.yul'))
+          throw new Error(`Invalid file extension: ${arg}`);
+
+        options.input = path.resolve(arg);
+
+        break;
+      }
+    }
+  }
+
+  if (!options.input && !options.decl && !options.proxyImpl) {
+    process.stdout.write(HELP + '\n');
+    process.exit(0);
+  }
+
+  switch (options.action) {
+    case 'compile':
+    case 'dump':
+    case 'verify':
+      options.versions.solc = solcVersion(options.solc);
+      options.versions.yulc = VERSION;
+      break;
+  }
+
+  return options;
+}
+
+/*
+ * Main
+ */
+
+function main(argv) {
+  const options = parseArgs(argv);
+
+  switch (options.action) {
+    case 'parse':
+      parse(options);
+      break;
+    case 'prettify':
+      prettify(options);
+      break;
+    case 'transpile':
+      transpile(options);
+      break;
+    case 'abi':
+      abi(options);
+      break;
+    case 'iface':
+      iface(options);
+      break;
+    case 'compile':
+      compile(options);
+      break;
+    case 'dump':
+      dump(options);
+      break;
+    case 'hash':
+      hash(options);
+      break;
+    case 'hashes':
+      hashes(options);
+      break;
+    case 'verify':
+      verify(options).catch((err) => {
+        console.error('%s', err.stack);
+        process.exit(1);
+      });
+      break;
+    case 'submit':
+      submit(options).catch((err) => {
+        console.error('%s', err.stack);
+        process.exit(1);
+      });
+      break;
+    case 'submit-proxy':
+      submitProxy(options).catch((err) => {
+        console.error('%s', err.stack);
+        process.exit(1);
+      });
+      break;
+    default:
+      throw new Error('unreachable');
+  }
+}
+
+/*
+ * Parser
+ */
+
+function parse(options) {
+  const {input, output} = options;
+  const ast = yul.parse(read(input), input);
+
+  write(output, stringify(ast));
+}
+
+/*
+ * Prettify
+ */
+
+function prettify(options) {
+  const {input, output} = options;
+  const code = yul.prettify(read(input), input);
+
+  write(output, code);
+}
+
+/*
+ * Transpiler
+ */
+
+function transpile(options) {
+  const {input, output} = options;
+  const result = transpileFile(input, options);
+
+  write(output, result.code);
+}
+
+/*
+ * ABI
+ */
+
+function abi(options) {
+  const {input, output} = options;
+  const result = transpileFile(input, options);
+  const abis = result.abi.toJSON(options.solabi);
+
+  let abi;
+
+  if (options.name)
+    abi = abis[options.name];
+  else
+    abi = abis[Object.keys(abis)[0]];
+
+  if (!abi)
+    throw new Error(`ABI for ${options.name} not found.`);
+
+  mkdirp(path.dirname(output), 0o755);
+  write(output, stringify(abi));
+}
+
+/*
+ * Interface
+ */
+
+function iface(options) {
+  const {input, output} = options;
+  const result = transpileFile(input, options);
+  const ifaces = result.abi.toSolidity();
+
+  let code;
+
+  if (options.name)
+    code = ifaces[options.name];
+  else
+    code = ifaces[Object.keys(ifaces)[0]];
+
+  if (!code)
+    throw new Error(`Interface for ${options.name} not found.`);
+
+  mkdirp(path.dirname(output), 0o755);
+  write(output, code);
+}
+
+/*
+ * Compiler
+ */
+
+function compile(options) {
+  const {input, output} = options;
+  const srcdir = path.dirname(input);
+  const builddir = path.dirname(output);
+  const basename = path.basename(output);
+  const result = transpileFile(input, options);
+  const abi = result.abi.toJSON(options.solabi);
+
+  if (output !== '-') {
+    if (!output.endsWith('.json'))
+      throw new Error(`Invalid file extension: ${output}`);
+
+    if (isDirectory(output))
+      throw new Error(`${output} is a directory.`);
+
+    mkdirp(builddir, 0o755);
+
+    if (options.tmpdir) {
+      const tmpname = basename.slice(0, -5) + '.out.yul';
+      const tmpdir = path.join(builddir, 'tmp');
+      const tmpfile = path.join(tmpdir, tmpname);
+
+      mkdir(tmpdir, 0o755);
+      write(tmpfile, result.code);
+    }
+  }
+
+  const {name, evm} = solc(options.solc, input, {
+    source: { content: result.code },
+    hardfork: options.hardfork,
+    runs: options.runs,
+    debug: options.debug,
+    deopt: result.deopt
+  });
+
+  const artifact = {
+    _format: 'hh-sol-artifact-1',
+    contractName: options.name || name,
+    sourceName: path.relative(process.cwd(), input),
+    abi: abi[name] || [],
+    bytecode: '0x' + evm.bytecode.object,
+    deployedBytecode: '0x' + evm.deployedBytecode.object,
+    linkReferences: evm.bytecode.linkReferences,
+    deployedLinkReferences: evm.deployedBytecode.linkReferences
+  };
+
+  if (evm.deployedBytecode.object.length > MAX_CODE_SIZE * 2) {
+    console.error('Warning: %s bytecode size violates EIP-170 (%d > %d).',
+                  options.name || name,
+                  evm.deployedBytecode.object.length / 2,
+                  MAX_CODE_SIZE);
+  }
+
+  if (evm.bytecode.object.length > MAX_INITCODE_SIZE * 2) {
+    console.error('Warning: %s initcode size violates EIP-3860 (%d > %d)',
+                  options.name || name,
+                  evm.bytecode.object.length / 2,
+                  MAX_INITCODE_SIZE);
+  }
+
+  if (output === '-') {
+    console.log('%s', stringify(artifact));
+    return;
+  }
+
+  write(output, stringify(artifact));
+
+  if (options.abidir) {
+    const abiname = basename.slice(0, -5) + '.abi.json';
+    const abidir = path.join(srcdir, 'abi');
+    const abifile = path.join(abidir, abiname);
+
+    mkdir(abidir, 0o755);
+    write(abifile, stringify(artifact.abi));
+  }
+
+  if (options.ifacedir) {
+    const code = result.abi.toSolidity()[name];
+
+    if (code) {
+      const ifacename = basename.slice(0, -5) + '.sol';
+      const ifacedir = path.join(srcdir, 'interfaces');
+      const ifacefile = path.join(ifacedir, ifacename);
+
+      mkdir(ifacedir, 0o755);
+      write(ifacefile, code);
+    }
+  }
+}
+
+/*
+ * Dump
+ */
+
+function dump(options) {
+  const {input, output} = options;
+  const result = transpileFile(input, options);
+  const outputs = [];
+
+  if (options.subarg) {
+    outputs.push(options.subarg);
+  } else {
+    outputs.push(
+      'irOptimized',
+      'evm.assembly',
+      'evm.bytecode.object',
+      'evm.bytecode.opcodes'
+    );
+  }
+
+  const contract = solc(options.solc, input, {
+    source: {
+      content: result.code
+    },
+    hardfork: options.hardfork,
+    runs: options.runs,
+    debug: options.debug,
+    deopt: result.deopt,
+    outputs: outputs
+  });
+
+  if (!options.subarg) {
+    const file = input !== '/dev/stdin'
+               ? path.relative(process.cwd(), input)
+               : '<stdin>';
+
+    const body = [
+      `======= ${file} (EVM) =======`,
+      '',
+      'Pretty printed source:',
+      contract.irOptimized,
+      '',
+      'Binary representation:',
+      contract.evm.bytecode.object,
+      '',
+      'Text representation:',
+      contract.evm.assembly
+    ];
+
+    write(output, body.join('\n'));
+
+    return;
+  }
+
+  switch (options.subarg) {
+    case 'irOptimized':
+      write(output, yul.prettify(contract.irOptimized, input));
+      break;
+    case 'evm.assembly':
+      write(output, contract.evm.assembly);
+      break;
+    case 'evm.bytecode.object':
+      write(output, contract.evm.bytecode.object);
+      break;
+    case 'evm.bytecode.opcodes':
+      write(output, contract.evm.bytecode.opcodes);
+      break;
+    default:
+      throw new Error('unreachable');
+  }
+}
+
+/*
+ * ABI Hashing
+ */
+
+function hash(options) {
+  let decl = options.decl.replace(/\s+/g, ' ').trim();
+
+  if (decl.startsWith('function ')) {
+    decl = `method ${decl.substring(9)} {}`;
+  } else if (decl.startsWith('method ')) {
+    decl += ' {}';
+  } else if (decl.startsWith('event ')) {
+    ; // Nothing.
+  } else if (decl.startsWith('error ')) {
+    ; // Nothing.
+  } else {
+    decl = `method ${decl} {}`;
+  }
+
+  const node = yul.parse(decl).nodes[0];
+  const name = node.name.value;
+  const types = [];
+
+  for (const [type] of node.params.items)
+    types.push(type.value);
+
+  let hash = yul.hash(name, types);
+
+  if (node.type !== 'EventDeclaration')
+    hash = hash.toString('hex', 0, 4);
+  else
+    hash = hash.toString('hex');
+
+  console.log(`0x${hash}`);
+}
+
+/*
+ * ABI Hashes
+ */
+
+function hashes(options) {
+  const {input} = options;
+  const file = path.relative(process.cwd(), input);
+  const {abi} = transpileFile(input, options);
+
+  for (const contract of abi.toHashes()) {
+    console.log(`======= ${file}:${contract.name} =======`);
+
+    if (contract.funcs.length > 0) {
+      console.log('Function signatures:');
+
+      for (const [name, signature] of contract.funcs)
+        console.log(`  ${signature}: ${name}`);
+    }
+
+    if (contract.events.length > 0) {
+      console.log('Event signatures:');
+
+      for (const [name, signature] of contract.events)
+        console.log(`  ${signature}: ${name}`);
+    }
+
+    if (contract.errors.length > 0) {
+      console.log('Error signatures:');
+
+      for (const [name, signature] of contract.errors)
+        console.log(`  ${signature}: ${name}`);
+    }
+  }
+}
+
+/*
+ * Code Verifier
+ */
+
+async function verify(options) {
+  const {input, provider, network, address} = options;
+  const url = provider || providers[network];
+
+  if (!url)
+    throw new Error(`Unknown network: ${network}`);
+
+  if (!address)
+    throw new Error('Must provide an address for verification.');
+
+  const result = transpileFile(input, options);
+
+  const {evm} = solc(options.solc, input, {
+    source: {
+      content: result.code
+    },
+    hardfork: options.hardfork,
+    runs: options.runs,
+    debug: options.debug,
+    deopt: result.deopt
+  });
+
+  const immref = evm.deployedBytecode.immutableReferences;
+  const expect = Buffer.from(evm.deployedBytecode.object, 'hex');
+
+  if (expect.length * 2 !== evm.deployedBytecode.object.length)
+    throw new Error('Solidity compiler returned an invalid hex string.');
+
+  const hex = await rpcCall(url, 'eth_getCode', [address, 'latest']);
+
+  if (typeof hex !== 'string')
+    throw new Error('eth_getCode did not return a string.');
+
+  const code = Buffer.from(hex.substring(2), 'hex');
+
+  if (code.length * 2 !== hex.length - 2)
+    throw new Error('eth_getCode returned an invalid hex string.');
+
+  if (code.length !== expect.length)
+    throw new Error('Code length mismatch.');
+
+  for (const name of Object.keys(immref)) {
+    let last = null;
+
+    for (const {start, length} of immref[name]) {
+      assert(start + length <= code.length);
+
+      const chunk = code.slice(start, start + length);
+
+      if (last && !chunk.equals(last))
+        throw new Error('Immutable mismatch.');
+
+      last = Buffer.from(chunk);
+
+      code.fill(0, start, start + length);
+    }
+
+    if (last) {
+      const value = '0x' + last.toString('hex');
+      console.log('Cleared immutable: %s (%s)', name, value);
+    }
+  }
+
+  if (!code.equals(expect))
+    throw new Error('Compiled bytecode differs from on-chain code.');
+
+  console.log('Successfully verified code.');
+}
+
+/*
+ * Source Submission
+ */
+
+async function submit(options) {
+  const apiKey = options.apiKey || process.env.ETHERSCAN_API_KEY;
+  const {input, provider, network, address} = options;
+  const url = provider || explorers[network];
+
+  if (!url)
+    throw new Error(`Unknown network: ${network}`);
+
+  if (!address)
+    throw new Error('Must provide an address for submission.');
+
+  if (!apiKey)
+    throw new Error('Must provide an API key for submission.');
+
+  if (input.includes('/contracts/'))
+    throw new Error('blacklist');
+
+  const result = transpileFile(input, options);
+
+  const contract = solc(options.solc, input, {
+    source: { content: result.code },
+    hardfork: options.hardfork,
+    runs: options.runs,
+    debug: options.debug,
+    deopt: result.deopt
+  });
+
+  switch (contract.name) {
+    case 'Directory':
+    case 'Market':
+    case 'Exchange':
+    case 'WarpDirectory':
+    case 'WarpMarket':
+    case 'WarpExchange':
+    case 'Secp256k1':
+      throw new Error('blacklist');
+  }
+
+  // https://docs.etherscan.io/api-endpoints/contracts#verify-source-code
+  // https://docs.etherscan.io/support/common-verification-errors
+  // https://etherscan.io/solcversions
+  const post = await formCall('POST', `${url}/api`, {
+    apikey: apiKey,
+    module: 'contract',
+    action: 'verifysourcecode',
+    contractaddress: address,
+    sourceCode: JSON.stringify(contract.options),
+    codeformat: 'solidity-standard-json-input',
+    contractname: `${contract.id}:${contract.name}`,
+    compilerversion: 'v' + fullVersion(options.solc),
+    // Single abi-encoded hex string (no 0x):
+    constructorArguements: options.ctorArgs,
+    licenseType: licenseMap[result.abi.license] || 1
+  });
+
+  if (post.status !== '1')
+    throw new Error(`Submission failed (${post.message}): ${post.result}`);
+
+  console.log('GUID: %s', post.result);
+
+  for (;;) {
+    console.log('Polling...');
+
+    await new Promise(x => setTimeout(x, 10000));
+
+    const query = await formCall('GET', `${url}/api`, {
+      apikey: apiKey,
+      module: 'contract',
+      action: 'checkverifystatus',
+      guid: post.result
+    });
+
+    if (query.result === 'Pending in queue')
+      continue;
+
+    if (query.result === 'Fail - Unable to verify' || query.status !== '1')
+      throw new Error(`Submission failed (${query.message}): ${query.result}`);
+
+    console.log('%s', query.result);
+
+    break;
+  }
+}
+
+async function submitProxy(options) {
+  const apiKey = options.apiKey || process.env.ETHERSCAN_API_KEY;
+  const {provider, network, address, proxyImpl} = options;
+  const url = provider || explorers[network];
+
+  if (!url)
+    throw new Error(`Unknown network: ${network}`);
+
+  if (!address || !proxyImpl)
+    throw new Error('Must provide an address for submission.');
+
+  if (!apiKey)
+    throw new Error('Must provide an API key for submission.');
+
+  // https://docs.etherscan.io/api-endpoints/contracts#verify-proxy-contract
+  // Note: blockscout automatically links proxies with implementations.
+  // See: https://github.com/blockscout/blockscout/issues/5555
+  const post = await formCall('POST', `${url}/api`, {
+    // First three should be in querystring?
+    apikey: apiKey,
+    module: 'contract',
+    action: 'verifyproxycontract',
+    address,
+    expectedimplementation: proxyImpl
+  });
+
+  if (post.status !== '1')
+    throw new Error(`Submission failed (${post.message}): ${post.result}`);
+
+  console.log('GUID: %s', post.result);
+
+  for (;;) {
+    console.log('Polling...');
+
+    await new Promise(x => setTimeout(x, 10000));
+
+    const query = await formCall('GET', `${url}/api`, {
+      apikey: apiKey,
+      module: 'contract',
+      action: 'checkproxyverification',
+      guid: post.result
+    });
+
+    if (query.result === 'Pending in queue')
+      continue;
+
+    if (query.result === 'Fail - Unable to verify' || query.status !== '1')
+      throw new Error(`Submission failed (${query.message}): ${query.result}`);
+
+    console.log('%s', query.result);
+
+    break;
+  }
+}
+
+/*
+ * Solidity Compiler
+ */
+
+function solc(arg0, filename, opts = {}) {
+  // Yul became stable in v0.8.13 (Mar 2022).
+  const warn = 'Yul is still experimental. Please use the output with care.';
+
+  let id = '<stdin>';
+
+  if (filename !== '/dev/stdin') {
+    id = path.relative(process.cwd(), filename);
+    id = id.slice(0, -4) + '.out.yul';
+  }
+
+  // https://docs.soliditylang.org/en/v0.8.20/using-the-compiler.html#input-description
+  const options = {
+    language: 'Yul',
+    sources: {
+      [id]: opts.source
+    },
+    settings: {
+      evmVersion: opts.hardfork,
+      outputSelection: {
+        [id]: {
+          '*': opts.outputs || [
+            'evm.bytecode.object',
+            'evm.bytecode.linkReferences',
+            'evm.deployedBytecode.object',
+            'evm.deployedBytecode.linkReferences',
+            'evm.deployedBytecode.immutableReferences'
+          ],
+          '': []
+        }
+      },
+      optimizer: undefined
+    }
+  };
+
+  // https://github.com/ethereum/solidity/blob/e44b8b9/libsolidity/interface/StandardCompiler.cpp#L558
+  if (opts.runs) {
+    let yulDetails = undefined;
+
+    if (opts.deopt) {
+      const rx = new RegExp(`[${opts.deopt}]`, 'g');
+
+      yulDetails = {
+        stackAllocation: true,
+        optimizerSteps: DEFAULT_STEPS.replace(rx, '') + ':' + CLEANUP_STEPS
+      };
+    }
+
+    options.settings.optimizer = {
+      enabled: true,
+      runs: opts.runs,
+      details: {
+        // peephole: false,
+        // inliner: false,
+        // jumpdestRemover: false,
+        // orderLiterals: false, // Solidity only.
+        // deduplicate: false,
+        // cse: false,
+        // constantOptimizer: false,
+        yul: true,
+        yulDetails
+      }
+    };
+  }
+
+  const stdin = JSON.stringify(options) + '\n';
+  const args = ['--standard-json'];
+
+  if (opts.source.urls && opts.source.urls.length > 0) {
+    args.push('--allow-paths');
+    args.push(path.dirname(opts.source.urls[0]));
+  }
+
+  const {stdout} = exec(arg0, args, stdin);
+  const output = JSON.parse(stdout);
+
+  if (output.errors) {
+    let error = false;
+
+    for (const err of output.errors) {
+      if (err.message !== warn)
+        console.error('%s', err.formattedMessage);
+
+      if (err.severity === 'error')
+        error = true;
+    }
+
+    if (error)
+      process.exit(1);
+  }
+
+  const contracts = output.contracts[id];
+  const names = Object.keys(contracts);
+
+  if (names.length !== 1)
+    throw new Error(`More than one contract in ${filename}`);
+
+  const name = names[0];
+  const contract = contracts[name];
+
+  contract.id = id;
+  contract.name = name;
+  contract.options = options;
+
+  if (!opts.outputs && !contract.evm.deployedBytecode) {
+    // Compiler cannot handle multiple subobjects.
+    contract.evm.deployedBytecode = {
+      immutableReferences: {},
+      linkReferences: {},
+      object: ''
+    };
+  }
+
+  return contract;
+}
+
+function solcVersion(solc) {
+  const {stdout} = exec(solc, ['--version']);
+  const parts = stdout.split('Version: ');
+
+  if (parts.length < 2)
+    throw new Error('Could not determine solc version.');
+
+  const str = parts[1].split(/[^0-9.]/)[0];
+
+  yul.version(str);
+
+  return str;
+}
+
+// eslint-disable-next-line no-unused-vars
+function tryVersion(solc) {
+  try {
+    return solcVersion(solc);
+  } catch (e) {
+    if (e.code !== 'ENOENT')
+      console.error('%s', e.message);
+    return null;
+  }
+}
+
+// Output of `solc --version`:
+//   ETH_PROJECT_VERSION
+//   (-SOL_VERSION_PRERELEASE)?
+//   (+SOL_VERSION_COMMIT(.ETH_BUILD_PLATFORM)?)?
+// Examples:
+//   #define ETH_PROJECT_VERSION "0.8.20"
+//   #define SOL_VERSION_PRERELEASE "develop.2023.7.11"
+//   #define SOL_VERSION_COMMIT "commit.a1b79de6"
+//   #define ETH_BUILD_PLATFORM "Linux.g++"
+// See: solidity/include/solidity/BuildInfo.h
+// Also: solidity/libsolidity/interface/Version.cpp
+const VERSION_REGEX = new RegExp(`^
+  (\\d+\\.\\d+\\.\\d+)
+  (?:-([a-z]+\\.\\d{4}\\.\\d{1,2}\\.\\d{1,2}))?
+  (?:\\+(commit\\.[0-9a-f]{8})(?:\\.(.+))?)?
+$`.replace(/\s+/g, ''), '');
+
+function getVersion(solc) {
+  const {stdout} = exec(solc, ['--version']);
+  const parts = stdout.split('Version: ');
+
+  if (parts.length < 2)
+    throw new Error('Could not determine solc version.');
+
+  return parts[1].trim();
+}
+
+function parseVersion(str) {
+  const match = VERSION_REGEX.exec(str);
+
+  if (!match)
+    throw new Error(`Could not parse solc version: ${str}`);
+
+  return {
+    version: match[1],
+    prerelease: match[2] || null,
+    commit: match[3] || null,
+    platform: match[4] || null
+  };
+}
+
+function serializeVersion(data) {
+  // Encode for etherscan.
+  let str = data.version;
+
+  // Exclude 'develop.' if this was a local build.
+  if (data.prerelease && data.prerelease.startsWith('nightly.'))
+    str += '-' + data.prerelease;
+
+  if (!data.commit)
+    throw new Error('Build commit required in solc version.');
+
+  str += '+' + data.commit;
+
+  return str;
+}
+
+function fullVersion(solc) {
+  const version = getVersion(solc);
+  const info = parseVersion(version);
+  return serializeVersion(info);
+}
+
+/*
+ * Helpers
+ */
+
+function exec(file, args, input) {
+  const result = cp.spawnSync(file, args, {
+    encoding: 'utf8',
+    stdio: 'pipe',
+    input
+  });
+
+  if (result.error)
+    throw result.error;
+
+  if (result.signal) {
+    console.error('%s exited with signal %s.',
+                  [file, ...args].join(' '),
+                  result.signal);
+
+    process.kill(process.pid, result.signal);
+  }
+
+  if (result.status) {
+    process.stderr.write(result.stderr);
+
+    console.error('%s exited with status %d.',
+                  [file, ...args].join(' '),
+                  result.status);
+
+    process.exit(result.status);
+  }
+
+  return result;
+}
+
+function getArgs(argv) {
+  const args = [];
+
+  let done = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+
+    if (done) {
+      args.push(arg);
+      continue;
+    }
+
+    if (i >= 2 && arg === '--') {
+      args.push(arg);
+      done = true;
+      continue;
+    }
+
+    if (arg.startsWith('--')) {
+      // e.g. --opt
+      const index = arg.indexOf('=');
+      if (index !== -1) {
+        // e.g. --opt=val
+        args.push(arg.substring(0, index));
+        args.push(arg.substring(index + 1));
+      } else {
+        args.push(arg);
+      }
+    } else if (arg.startsWith('-')) {
+      if (arg.length > 2 && arg.startsWith('-D')) {
+        // e.g. -Dx=y
+        args.push('-D');
+        args.push(arg.substring(2));
+      } else if (arg.length > 2 && arg.startsWith('-O')) {
+        // e.g. -O1
+        args.push(arg);
+      } else if (arg.length > 2) {
+        // e.g. -abc
+        for (let j = 1; j < arg.length; j++)
+          args.push(`-${arg.charAt(j)}`);
+      } else {
+        // e.g. -a
+        args.push(arg);
+      }
+    } else {
+      // e.g. foo
+      args.push(arg);
+    }
+  }
+
+  return args;
+}
+
+function isDirectory(name) {
+  try {
+    return fs.statSync(name).isDirectory();
+  } catch (e) {
+    return false;
+  }
+}
+
+function mkdir(dir, mode = 0o777) {
+  try {
+    fs.mkdirSync(dir, mode);
+  } catch (e) {
+    if (e.code !== 'EEXIST')
+      throw e;
+  }
+}
+
+function mkdirp(dir, mode = 0o777) {
+  const paths = [];
+
+  // fs.mkdirSync(dir, { mode, recursive: true });
+
+  dir = path.normalize(dir);
+
+  for (;;) {
+    paths.push(dir);
+
+    const next = path.dirname(dir);
+
+    if (next === dir)
+      break;
+
+    dir = next;
+  }
+
+  for (const path of paths.reverse()) {
+    try {
+      const stat = fs.statSync(path);
+
+      if (!stat.isDirectory())
+        throw new Error(`${path} is not a directory.`);
+    } catch (e) {
+      if (e.code === 'ENOENT')
+        fs.mkdirSync(path, mode);
+      else
+        throw e;
+    }
+  }
+}
+
+function stringify(data) {
+  return JSON.stringify(data, null, 2);
+}
+
+function read(name) {
+  return fs.readFileSync(name, 'utf8');
+}
+
+function write(name, text) {
+  if (name === '-') {
+    console.log('%s', text);
+    return;
+  }
+
+  fs.writeFileSync(name, text + '\n', 'utf8');
+}
+
+function transpileFile(filename, options) {
+  const input = fs.readFileSync(filename, 'utf8');
+  return yul.transpile(input, filename, options);
+}
+
+async function rpcCall(url, method, params = []) {
+  const {fetch, Headers} = global;
+
+  if (typeof fetch !== 'function')
+    throw new Error('Fetch API not available.');
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: new Headers([
+      ['Content-Type', 'application/json']
+    ]),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 0,
+      method: method,
+      params: params
+    }) + '\n',
+    mode: 'cors',
+    credentials: 'omit',
+    cache: 'no-store',
+    redirect: 'follow',
+    referrer: '',
+    referrerPolicy: 'no-referrer',
+    keepalive: false
+  });
+
+  if (response.status !== 200)
+    throw new Error(`HTTP Error: ${response.status}`);
+
+  const type = response.headers.get('Content-Type');
+
+  if (type == null || type.split(';')[0].trim() !== 'application/json')
+    throw new Error('Invalid HTTP Content-Type.');
+
+  const json = await response.json();
+
+  if (json == null || typeof json !== 'object' || Array.isArray(json))
+    throw new Error('Invalid HTTP body.');
+
+  if (json.error) {
+    const {code, message, data} = json.error;
+    const error = new Error(String(message || ''));
+
+    error.name = 'RPCError';
+    error.code = code >>> 0;
+    error.data = data;
+
+    throw error;
+  }
+
+  return json.result;
+}
+
+async function formCall(method, url, params) {
+  const {fetch, Headers, URLSearchParams} = global;
+
+  if (typeof fetch !== 'function')
+    throw new Error('Fetch API not available.');
+
+  let headers, body;
+
+  if (method === 'GET') {
+    url += '?' + new URLSearchParams(params).toString();
+  } else {
+    headers = new Headers([
+      ['Content-Type', 'application/x-www-form-urlencoded']
+    ]);
+    body = new URLSearchParams(params).toString();
+  }
+
+  const response = await fetch(url, {
+    method,
+    headers,
+    body,
+    mode: 'cors',
+    credentials: 'omit',
+    cache: 'no-store',
+    redirect: 'follow',
+    referrer: '',
+    referrerPolicy: 'no-referrer',
+    keepalive: false
+  });
+
+  return response.json();
+}
+
+/*
+ * Entry Point
+ */
+
+main(process.argv);
