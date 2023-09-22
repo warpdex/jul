@@ -278,7 +278,7 @@ function __safeshln(n, x, w) -> z {
 
   if or(xor(shr(n, z), x), shr(w, z)) {
     // __panic_debug(0x11)
-    revert.debug("shl() overflow")
+    revert.debug("shln() overflow")
   }
 }
 
