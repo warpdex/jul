@@ -144,13 +144,15 @@ macro bswap16(x) := __bswap16(x)
 macro bswap32(x) := __bswap32(x)
 macro bswap64(x) := __bswap64(x)
 macro safeadd(x, y) := __safeadd(x, y)
+macro safeaddn(x, y, n) := __safeaddn(x, y, n)
 macro safesub(x, y) := __safesub(x, y)
 macro safemul(x, y) := __safemul(x, y)
+macro safemuln(x, y) := __safemuln(x, y, n)
 macro safeshl(n, x) := __safeshl(n, x)
+macro safeshln(n, x, w) := __safeshln(n, x, w)
 macro safediv(x, y) := __safediv(x, y)
 macro safesdiv(x, y) := __safesdiv(x, y)
 macro safemod(x, y) := __safemod(x, y)
-macro safeaddn(x, y, n) := __safeaddn(x, y, n)
 macro safeload(x) := __safeload(x)
 macro mload.string(ptr) := __mload_string(ptr)
 macro calldataload.string(ptr) := __calldataload_string(ptr)
@@ -198,6 +200,18 @@ function __safeadd(x, y) -> z {
   }
 }
 
+function __safeaddn(x, y, n) -> z {
+  // Code Size: 7
+  // Code Size (debug): 9
+  // Gas Cost: 22
+  z := add(x, y)
+
+  if or(lt(z, y), shr(n, z)) {
+    // __panic_debug(0x11)
+    revert.debug("addn() overflow")
+  }
+}
+
 function __safesub(x, y) -> z {
   // Code Size: 5
   // Code Size (debug): 7
@@ -227,6 +241,23 @@ function __safemul(x, y) -> z {
   }
 }
 
+function __safemuln(x, y, n) -> z {
+  // Code Size: 11
+  // Code Size (debug): 13
+  // Gas Cost: 45
+  if iszero(y) {
+    z := 0
+    leave
+  }
+
+  z := mul(x, y)
+
+  if or(xor(div(z, y), x), shr(n, z)) {
+    // __panic_debug(0x11)
+    revert.debug("muln() overflow")
+  }
+}
+
 function __safeshl(n, x) -> z {
   // Code Size: 6
   // Code Size (debug): 8
@@ -234,6 +265,18 @@ function __safeshl(n, x) -> z {
   z := shl(n, x)
 
   if xor(shr(n, z), x) {
+    // __panic_debug(0x11)
+    revert.debug("shl() overflow")
+  }
+}
+
+function __safeshln(n, x, w) -> z {
+  // Code Size: 8
+  // Code Size (debug): 10
+  // Gas Cost: 28
+  z := shl(n, x)
+
+  if or(xor(shr(n, z), x), shr(w, z)) {
     // __panic_debug(0x11)
     revert.debug("shl() overflow")
   }
@@ -273,18 +316,6 @@ function __safemod(x, y) -> z {
   }
 
   z := mod(x, y)
-}
-
-function __safeaddn(x, y, n) -> z {
-  // Code Size: 7
-  // Code Size (debug): 9
-  // Gas Cost: 22
-  z := add(x, y)
-
-  if or(lt(z, y), shr(n, z)) {
-    // __panic_debug(0x11)
-    revert.debug("addn() overflow")
-  }
 }
 
 macro safeadd8(x, y) := __safeaddn(x, y, 8)
