@@ -31,6 +31,19 @@ function __mutex_unlock() {
   }
 }
 
+function __mutex_check() {
+  @if gt(EVM_VERSION, 202304) { // Cancun
+    // https://eips.ethereum.org/EIPS/eip-1153
+    if tload(__mutex_key()) {
+      revert(0, 0)
+    }
+  } else {
+    if eq(sload(__mutex_key()), 2) {
+      revert(0, 0)
+    }
+  }
+}
+
 function __check_memory_array(ptr, unit, pos) {
   @if defined(INLINE_ASM) {
     if shr(32, ptr) {
