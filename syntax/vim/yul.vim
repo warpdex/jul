@@ -93,6 +93,7 @@ syn keyword yulBuiltin       selector require neq lte gte slte sgte ucmp scmp ne
 \                            mstores verbatim offsetof undefined safemuln
 \                            safeshln
 syn match   yulBuiltin       /\<method\.\(check\|call\|select\)\>/
+syn match   yulBuiltin       /\<mutex\.\(init\|check\|lock\|unlock\)\>/
 syn match   yulBuiltin       /\<eth\.\(send\|transfer\)\>/
 " syn match   yulBuiltin       /\<require\.\(zero\|before\|after\|owner\)\>/
 syn match   yulSpecial       /[@+]/

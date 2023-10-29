@@ -761,6 +761,54 @@ function __create2_hash(pos, sender, code_hash, salt) -> addr {
   addr := shr(96, shl(96, addr))
 }
 
+macro mutex.init(expr) {
+  function __mutex_key() -> key {
+    key := expr
+  }
+}
+
+macro mutex.check() := __mutex_check()
+macro mutex.lock() := __mutex_lock()
+macro mutex.unlock() := __mutex_unlock()
+
+function __mutex_check() {
+  @if gt(EVM_VERSION, 202304) { // Cancun
+    // https://eips.ethereum.org/EIPS/eip-1153
+    if tload(__mutex_key()) {
+      revert(0, 0)
+    }
+  } else {
+    if eq(sload(__mutex_key()), 2) {
+      revert(0, 0)
+    }
+  }
+}
+
+function __mutex_lock() {
+  let key := __mutex_key()
+
+  @if gt(EVM_VERSION, 202304) { // Cancun
+    // https://eips.ethereum.org/EIPS/eip-1153
+    if tload(key) {
+      revert(0, 0)
+    }
+    tstore(key, 1)
+  } else {
+    if eq(sload(key), 2) {
+      revert(0, 0)
+    }
+    sstore(key, 2)
+  }
+}
+
+function __mutex_unlock() {
+  @if gt(EVM_VERSION, 202304) { // Cancun
+    tstore(__mutex_key(), 0)
+  } else {
+    sstore(__mutex_key(), 1)
+  }
+}
+
 macro verbatim.not(x) := verbatim_1i_1o(hex"19", x)
 macro verbatim.shl(n, x) := verbatim_2i_1o(hex"1b", n, x)
 macro verbatim.shr(n, x) := verbatim_2i_1o(hex"1c", n, x)

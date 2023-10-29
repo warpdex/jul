@@ -2,48 +2,6 @@
 // CALL_GAS = 700 (Tangerine Whistle, EIP-150, 2016) (Byzantium, EIP-214, 2017)
 // CALL_GAS = 100 (Berlin, EIP-2929, 2021)
 
-function __mutex_key() -> key {
-  key := 0
-}
-
-function __mutex_lock() {
-  let key := __mutex_key()
-
-  @if gt(EVM_VERSION, 202304) { // Cancun
-    // https://eips.ethereum.org/EIPS/eip-1153
-    if tload(key) {
-      revert(0, 0)
-    }
-    tstore(key, 1)
-  } else {
-    if eq(sload(key), 2) {
-      revert(0, 0)
-    }
-    sstore(key, 2)
-  }
-}
-
-function __mutex_unlock() {
-  @if gt(EVM_VERSION, 202304) { // Cancun
-    tstore(__mutex_key(), 0)
-  } else {
-    sstore(__mutex_key(), 1)
-  }
-}
-
-function __mutex_check() {
-  @if gt(EVM_VERSION, 202304) { // Cancun
-    // https://eips.ethereum.org/EIPS/eip-1153
-    if tload(__mutex_key()) {
-      revert(0, 0)
-    }
-  } else {
-    if eq(sload(__mutex_key()), 2) {
-      revert(0, 0)
-    }
-  }
-}
-
 function __check_memory_array(ptr, unit, pos) {
   @if defined(INLINE_ASM) {
     if shr(32, ptr) {
