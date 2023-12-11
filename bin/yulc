@@ -35,7 +35,7 @@ const HELP = `
     -P, --prettify         prettify without transpiling
     -t, --transpile        transpile only
     --abi                  output abi
-    --json-abi             use solc abi format
+    --ethers-abi           use ethers.js human-readable abi format
     --interface            output solidity interface file
     --dump                 dump raw solc output (ir, bin, asm)
     --asm                  output assembly
@@ -342,7 +342,7 @@ function parseArgs(argv) {
     tmpdir: false,
     abidir: false,
     ifacedir: false,
-    solabi: false,
+    ethers: false,
     metadata: true,
     network: 'ethereum',
     provider: null,
@@ -440,8 +440,8 @@ function parseArgs(argv) {
         break;
       }
 
-      case '--json-abi': {
-        options.solabi = true;
+      case '--ethers-abi': {
+        options.ethers = true;
         break;
       }
 
@@ -835,7 +835,7 @@ function transpile(options) {
 function abi(options) {
   const {input, output} = options;
   const result = transpileFile(input, options);
-  const abis = result.abi.toJSON(options.solabi);
+  const abis = result.abi.toJSON(options.ethers);
 
   let abi;
 
@@ -884,7 +884,7 @@ function compile(options) {
   const builddir = path.dirname(output);
   const basename = path.basename(output);
   const result = transpileFile(input, options);
-  const abi = result.abi.toJSON(options.solabi);
+  const abi = result.abi.toJSON(options.ethers);
 
   if (output !== '-') {
     if (!output.endsWith('.json'))
