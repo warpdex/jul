@@ -195,8 +195,8 @@ const providers = {
   'ethereum': 'https://cloudflare-eth.com',
   'goerli': 'https://rpc.ankr.com/eth_goerli',
   'sepolia': 'https://rpc.ankr.com/eth_sepolia',
-  'binance': 'https://bsc-dataseed.binance.org',
-  'binance-testnet': 'https://data-seed-prebsc-1-s1.binance.org:8545',
+  'binance': 'https://bsc-dataseed.bnbchain.org',
+  'binance-testnet': 'https://data-seed-prebsc-1-s1.bnbchain.org:8545',
   'polygon': 'https://polygon-rpc.com',
   'polygon-mumbai': 'https://rpc.ankr.com/polygon_mumbai',
   'avalanche': 'https://api.avax.network/ext/bc/C/rpc',
@@ -213,8 +213,9 @@ const providers = {
   'gnosis-chiado': 'https://rpc.chiadochain.net',
   'optimism': 'https://mainnet.optimism.io',
   'optimism-goerli': 'https://goerli.optimism.io',
-  'evmos': 'https://eth.bd.evmos.org:8545',
-  'evmos-testnet': 'https://eth.bd.evmos.dev:8545',
+  'optimism-sepolia': 'https://sepolia.optimism.io',
+  'evmos': 'https://evmos.lava.build',
+  'evmos-testnet': 'https://evmos-testnet.lava.build',
   'canto': 'https://canto.slingshot.finance',
   'canto-testnet': 'https://testnet-archive.plexnode.wtf',
   'moonbeam': 'https://rpc.api.moonbeam.network',
@@ -225,8 +226,10 @@ const providers = {
   'aurora-testnet': 'https://testnet.aurora.dev',
   'arbitrum': 'https://arb1.arbitrum.io/rpc',
   'arbitrum-goerli': 'https://goerli-rollup.arbitrum.io/rpc',
+  'arbitrum-sepolia': 'https://sepolia-rollup.arbitrum.io/rpc',
   'base': 'https://mainnet.base.org',
   'base-goerli': 'https://goerli.base.org',
+  'base-sepolia': 'https://sepolia.base.org',
   'rootstock': 'https://public-node.rsk.co',
   'rootstock-testnet': 'https://public-node.testnet.rsk.co',
   'devnet': 'http://localhost:8545'
@@ -259,6 +262,7 @@ const explorers = {
   'gnosis-chiado': null,
   'optimism': 'https://api-optimistic.etherscan.io',
   'optimism-goerli': 'https://api-goerli-optimism.etherscan.io',
+  'optimism-sepolia': 'https://api-sepolia-optimism.etherscan.io',
   'evmos': null,
   'evmos-testnet': null,
   'canto': 'https://tuber.build',
@@ -271,8 +275,10 @@ const explorers = {
   'aurora-testnet': null,
   'arbitrum': 'https://api.arbiscan.io',
   'arbitrum-goerli': 'https://api-goerli.arbiscan.io',
+  'arbitrum-sepolia': 'https://api-sepolia.arbiscan.io',
   'base': 'https://api.basescan.org',
-  'base-goerli': 'https://goerli.basescan.org',
+  'base-goerli': 'https://api-goerli.basescan.org',
+  'base-sepolia': 'https://api-sepolia.basescan.org',
   'rootstock': null,
   'rootstock-testnet': null,
   'devnet': null
@@ -1705,7 +1711,8 @@ async function rpcCall(url, method, params = []) {
   const response = await fetch(url, {
     method: 'POST',
     headers: new Headers([
-      ['Content-Type', 'application/json']
+      ['Content-Type', 'application/json'],
+      ['Accept', 'application/json']
     ]),
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -1717,8 +1724,7 @@ async function rpcCall(url, method, params = []) {
     credentials: 'omit',
     cache: 'no-store',
     redirect: 'follow',
-    referrer: '',
-    referrerPolicy: 'no-referrer',
+    referrer: 'no-referrer',
     keepalive: false
   });
 
@@ -1758,10 +1764,14 @@ async function formCall(method, url, params) {
   let headers, body;
 
   if (method === 'GET') {
+    headers = new Headers([
+      ['Accept', 'application/json']
+    ]);
     url += '?' + new URLSearchParams(params).toString();
   } else {
     headers = new Headers([
-      ['Content-Type', 'application/x-www-form-urlencoded']
+      ['Content-Type', 'application/x-www-form-urlencoded'],
+      ['Accept', 'application/json']
     ]);
     body = new URLSearchParams(params).toString();
   }
@@ -1774,8 +1784,7 @@ async function formCall(method, url, params) {
     credentials: 'omit',
     cache: 'no-store',
     redirect: 'follow',
-    referrer: '',
-    referrerPolicy: 'no-referrer',
+    referrer: 'no-referrer',
     keepalive: false
   });
 
