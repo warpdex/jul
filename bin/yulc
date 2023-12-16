@@ -1724,6 +1724,7 @@ async function rpcCall(url, method, params = []) {
     credentials: 'omit',
     cache: 'no-store',
     redirect: 'follow',
+    referrer: '',
     keepalive: false
   });
 
@@ -1783,6 +1784,7 @@ async function formCall(method, url, params) {
     credentials: 'omit',
     cache: 'no-store',
     redirect: 'follow',
+    referrer: '',
     keepalive: false
   });
 
