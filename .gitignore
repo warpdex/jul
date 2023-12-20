@@ -40,6 +40,7 @@ package-lock.json
 *.swp
 tmp/
 v8.log
+vendor/soljson-*.js
 *.vcxproj
 *.vcxproj.filters
 .vscode/

@@ -21,7 +21,7 @@ const yul = require('../lib/yul');
  * Constants
  */
 
-const VERSION = '0.0.0';
+const VERSION = require('../package.json').version;
 
 const HELP = `
   Usage: yulc [options] [file]
@@ -29,7 +29,8 @@ const HELP = `
   Options:
 
     -v, --version          output the version number
-    --solc <path>          path to solc binary (default: $SOLC or 'solc')
+    --solc <path>          path to solc binary (default: see below)
+    --native               alias for --solc=solc
     --hardfork <name>      desired evm version (default: london)
     -o, --output <file>    output file/directory
     -A, --ast              output ast
@@ -66,7 +67,27 @@ const HELP = `
     --api-key <key>        etherscan/blockscout api-key
     --ctor-args <hex>      constructor arguments for source submission
     -h, --help             output usage information
+
+  Environment Variables:
+
+    SOLC                   path to solc binary (overridden by --solc)
+
+  Notes:
+
+    By default, yulc attempts to use a vendored wasm version of solc.
+
+    If this package was the result of a \`git clone\`, the wasm binary
+    will not be present and may be downloaded manually by running
+    \`$ ./tools/install.js\`, otherwise yulc will fall back to running
+    whatever native version of solc happens to be present on the system.
+
+    If this package is the result of an npm installation, you need not
+    do anything (yulc will use the vendored wasm binary).
 `;
+
+const {name:SOLC_NAME} = require('../etc/solc.json');
+const SOLC_BIN = process.platform === 'win32' ? 'solc.exe' : 'solc';
+const SOLC_JS = path.join(__dirname, '..', 'vendor', SOLC_NAME);
 
 /*
  * Optimization Step Legend
@@ -334,7 +355,7 @@ const licenseMap = {
 
 function parseArgs(argv) {
   const options = {
-    solc: process.env.SOLC || 'solc',
+    solc: defaultSolc(),
     hardfork: 'london',
     action: 'compile',
     input: null,
@@ -398,6 +419,11 @@ function parseArgs(argv) {
 
         i += 1;
 
+        break;
+      }
+
+      case '--native': {
+        options.solc = SOLC_BIN;
         break;
       }
 
@@ -1550,6 +1576,7 @@ function exec(file, args, input) {
   const result = cp.spawnSync(file, args, {
     encoding: 'utf8',
     stdio: 'pipe',
+    windowsHide: true,
     input
   });
 
@@ -1595,6 +1622,13 @@ function execSolc(file, args, input) {
   }
 
   return exec(file, args, input);
+}
+
+function defaultSolc() {
+  if (process.env.SOLC)
+    return process.env.SOLC;
+
+  return fs.existsSync(SOLC_JS) ? SOLC_JS : SOLC_BIN;
 }
 
 function getArgs(argv) {
