@@ -1840,7 +1840,7 @@ async function formCall(method, url, params) {
     cache: 'no-store',
     redirect: 'follow',
     referrer: '',
-    keepalive: false
+    keepalive: true
   });
 
   return response.json();
