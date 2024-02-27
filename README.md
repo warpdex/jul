@@ -4,7 +4,7 @@ Yul (with some solidioms)
 
 ## Usage
 
-TODO
+See doc/lang.md.
 
 ## Contribution and License Agreement
 
@@ -14,6 +14,6 @@ all code is your original work. `</legalese>`
 
 ## License
 
-- Copyright (c) 2022-2023, Christopher Jeffrey (MIT License).
+- Copyright (c) 2022-2024, Christopher Jeffrey (MIT License).
 
 See LICENSE for more info.
