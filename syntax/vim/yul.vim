@@ -91,7 +91,15 @@ syn keyword yulBuiltin       selector require neq lte gte slte sgte ucmp scmp ne
 \                            bitlen declen octlen digits2 digits10 digits256
 \                            umin umax smin smax abs sign popcount ctz clz
 \                            mstores verbatim offsetof undefined safemuln
-\                            safeshln
+\                            safeshln calldataloadn calldataload8 calldataload16
+\                            calldataload24 calldataload32 calldataload40
+\                            calldataload48 calldataload56 calldataload64
+\                            calldataload96 calldataload128 calldataload160
+\                            calldataload192 calldataload224 calldataload256
+\                            mloadn mload8 mload16 mload24 mload32 mload40
+\                            mload48 mload56 mload64 mload96 mload128 mload160
+\                            mload192 mload224 mload256
+
 syn match   yulBuiltin       /\<method\.\(check\|call\|select\)\>/
 syn match   yulBuiltin       /\<mutex\.\(init\|check\|lock\|unlock\)\>/
 syn match   yulBuiltin       /\<eth\.\(send\|transfer\)\>/
