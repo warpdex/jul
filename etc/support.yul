@@ -154,15 +154,6 @@ macro __require(ok) {
   }
 }
 
-macro __require2(x, y) {
-  // Code Size: 5
-  let ok1 := x
-  let ok2 := y
-  if iszero(and(ok1, ok2)) {
-    revert(0, 0)
-  }
-}
-
 // Gas Cost: 15 + words(len) * 3 (+ CALL_GAS + 15)
 function __mcopy(zp, xp, xn) {
   // Code Size: 13
