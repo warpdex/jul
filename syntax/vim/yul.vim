@@ -12,6 +12,14 @@ syn keyword yulTodo          TODO FIXME XXX TBD contained
 syn match   yulLineComment   "\/\/.*" contains=@Spell,yulTodo
 syn region  yulMultiComment  start="/\*" end="\*/" contains=@Spell,yulTodo
 
+" NatSpec Comments
+syn match   yulNatComment    "\/\/\/.*" contains=yulDocNotation,@Spell,yulTodo
+syn region  yulDocComment    matchgroup=yulMultiComment start="/\*\*" end="\*/"
+\                            contains=yulDocNotation,yulTodo,@Spell
+syn match   yulDocNotation   contained /@/ nextgroup=yulDocTags
+syn keyword yulDocTags       contained title author notice dev param return
+\                                      inheritdoc custom
+
 " Constant
 syn region  yulString        start=+"+ skip=+\\\\\|\\$"+ end=+"+
 syn match   yulCharacter     /'\\\=.'/
@@ -103,17 +111,27 @@ syn keyword yulBuiltin       selector require neq lte gte slte sgte ucmp scmp ne
 syn match   yulBuiltin       /\<method\.\(check\|call\|select\)\>/
 syn match   yulBuiltin       /\<mutex\.\(init\|check\|lock\|unlock\)\>/
 syn match   yulBuiltin       /\<eth\.\(send\|transfer\)\>/
-" syn match   yulBuiltin       /\<require\.\(zero\|before\|after\|owner\)\>/
 syn match   yulSpecial       /[@+]/
 
 " Error
 syn match   yulBadAssign     /\zs=\ze/
 syn match   yulSemicolon     /;$/
 
+" Synchronization
+syn sync fromstart
+syn sync maxlines=100
+syn sync ccomment yulMultiComment
+
 " Comment
 hi def link yulTodo          Todo
 hi def link yulLineComment   Comment
 hi def link yulMultiComment  Comment
+
+" NatSpec Comments
+hi def link yulNatComment    Comment
+hi def link yulDocComment    Comment
+hi def link yulDocNotation   SpecialComment
+hi def link yulDocTags       SpecialComment
 
 " Constant
 hi def link yulString        String
