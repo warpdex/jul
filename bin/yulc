@@ -340,7 +340,7 @@ const licenseMap = {
 // https://ethereum.org/en/history/
 // https://medium.com/mycrypto/the-history-of-ethereum-hard-forks-6a6dae76d56f
 //
-// Cancun (TBD) = TLOAD, TSTORE, MCOPY
+// Cancun (Mar 2024) = TLOAD, TSTORE, MCOPY
 // Shanghai (Apr 2023) = PUSH0, MAX_INITCODE_SIZE
 // Paris (Sep 2022) = DIFFICULTY->PREVRANDAO (default in 0.8.18)
 // London (Aug 2021) = BASEFEE, EIP-1559

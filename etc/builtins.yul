@@ -804,7 +804,7 @@ macro mutex.lock() := __mutex_lock()
 macro mutex.unlock() := __mutex_unlock()
 
 function __mutex_check() {
-  @if gt(EVM_VERSION, 202304) { // Cancun
+  @if gte(EVM_VERSION, 202403) { // Cancun
     // https://eips.ethereum.org/EIPS/eip-1153
     if tload(__mutex_key()) {
       revert(0, 0)
@@ -819,7 +819,7 @@ function __mutex_check() {
 function __mutex_lock() {
   let key := __mutex_key()
 
-  @if gt(EVM_VERSION, 202304) { // Cancun
+  @if gte(EVM_VERSION, 202403) { // Cancun
     // https://eips.ethereum.org/EIPS/eip-1153
     if tload(key) {
       revert(0, 0)
@@ -834,7 +834,7 @@ function __mutex_lock() {
 }
 
 function __mutex_unlock() {
-  @if gt(EVM_VERSION, 202304) { // Cancun
+  @if gte(EVM_VERSION, 202403) { // Cancun
     tstore(__mutex_key(), 0)
   } else {
     sstore(__mutex_key(), 1)
