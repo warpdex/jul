@@ -1,7 +1,7 @@
 {
-  "name": "@warpdex/yul",
-  "version": "0.0.0",
-  "private": true,
+  "name": "julc",
+  "version": "0.0.1",
+  "private": false,
   "description": "yul with some solidioms",
   "keywords": [
     "compiler",
@@ -12,10 +12,10 @@
     "yul"
   ],
   "license": "MIT",
-  "repository": "git://github.com/warpdex/yul.git",
-  "homepage": "https://github.com/warpdex/yul",
+  "repository": "git://github.com/warpdex/jul.git",
+  "homepage": "https://github.com/warpdex/jul",
   "bugs": {
-    "url": "https://github.com/warpdex/yul/issues"
+    "url": "https://github.com/warpdex/jul/issues"
   },
   "author": "Christopher Jeffrey <chjjeffrey@gmail.com>",
   "main": "./lib/yul.js",
