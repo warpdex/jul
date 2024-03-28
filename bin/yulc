@@ -2,8 +2,8 @@
 
 /*!
  * yulc - yul compiler
- * Copyright (c) 2022-2023, Christopher Jeffrey (MIT License).
- * https://github.com/chjj
+ * Copyright (c) 2022-2024, Christopher Jeffrey (MIT License).
+ * https://github.com/warpdex/jul
  */
 
 'use strict';
