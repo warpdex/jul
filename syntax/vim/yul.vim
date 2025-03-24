@@ -58,7 +58,7 @@ syn keyword yulStructure     struct enum
 
 " Special
 syn keyword yulAttribute     pure view payable anonymous packed
-\                            optimize unchecked inline noinline
+\                            optimize unchecked inline noinline memory
 syn keyword yulOpcodes       stop add sub mul div sdiv mod smod exp not lt gt
 \                            slt sgt eq iszero and or xor byte shl shr sar
 \                            addmod mulmod signextend keccak256 pc pop mload
