@@ -53,6 +53,7 @@ syn keyword yulType          uint int bytes bool string indexed
 syn match   yulType          /\<address\>\ze/
 syn match   yulType          /\<u\=int[0-9]\+\|bytes[0-9]\+\>/
 syn match   yulType          /:\s*\zs[a-zA-Z_$][a-zA-Z_$0-9.]*/
+syn match   yulType          /\zs[a-zA-Z_$][a-zA-Z_$0-9.]*\s*\ze\s*:\s*[{(]/
 syn keyword yulStorageClass  internal external private public
 syn keyword yulStructure     struct enum
 
