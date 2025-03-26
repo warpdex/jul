@@ -177,26 +177,31 @@ const SOLC_JS = path.join(__dirname, '..', 'vendor', SOLC_NAME);
 
 /*
  * Default Optimization Steps
- * https://github.com/ethereum/solidity/blob/e44b8b9/libsolidity/interface/OptimiserSettings.h#L44
+ * https://github.com/ethereum/solidity/blob/v0.8.29/libsolidity/interface/OptimiserSettings.h#L44
  */
 
 const DEFAULT_STEPS = [
-  'dhfoDgvulfnTUtnIf',
-  '[',
-    'xa[r]EscLM',
-    'cCTUtTOntnfDIul',
-    'Lcul',
-    'Vcul [j]',
-    'Tpeul',
-    'xa[rul]',
-    'xa[r]cL',
-    'gvif',
-    'CTUca[r]LSsTFOtfDnca[r]Iulc',
-  ']',
-  'jmul[jul] VcTOcul jmul'
+  'dhfoDgvulfnTUtnIf',           // None of these can make stack problems worse
+
+  'xa[r]EscLM',                  // Turn into SSA and simplify
+  'Vcul [j]',                    // Reverse SSA
+
+  // should have good 'compilability' property here.
+
+  'Trpeul',                      // Run functional expression inliner
+  'xa[r]cL',                     // Turn into SSA again and simplify
+  'gvifM',                       // Run full inliner
+  'CTUca[r]LSsTFOtfDnca[r]Iulc', // SSA plus simplify
+
+  'scCTUt',
+  'gvifM',                       // Run full inliner
+  'x[scCTUt] TOntnfDIul',        // Perform structural simplification
+  'gvifM',                       // Run full inliner
+
+  'jmul[jul] VcTOcul jmul'       // Make source short and pretty
 ].join('');
 
-const CLEANUP_STEPS = 'fDnTOc';
+const CLEANUP_STEPS = 'fDnTOcmuO';
 
 /*
  * Consensus Limits
