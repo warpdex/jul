@@ -1371,7 +1371,8 @@ async function submitProxy(options) {
 
 function solc(arg0, filename, opts = {}) {
   // Yul became stable in v0.8.13 (Mar 2022).
-  const warn = 'Yul is still experimental. Please use the output with care.';
+  const warn1 = 'Yul is still experimental. Please use the output with care.';
+  const warn2 = 'Transient storage as defined by EIP-1153 can break the';
 
   let id = '<stdin>';
 
@@ -1449,7 +1450,7 @@ function solc(arg0, filename, opts = {}) {
     let error = false;
 
     for (const err of output.errors) {
-      if (err.message !== warn)
+      if (err.message !== warn1 && !err.message.startsWith(warn2))
         console.error('%s', err.formattedMessage);
 
       if (err.severity === 'error')
