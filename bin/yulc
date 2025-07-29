@@ -1099,12 +1099,13 @@ function hash(options) {
 
   const node = yul.parse(decl).nodes[0];
   const name = node.name.value;
+  const packed = node.packed === true;
   const types = [];
 
   for (const [type] of node.params.items)
     types.push(type.value);
 
-  let hash = yul.hash(name, types);
+  let hash = yul.hash(name, types, packed);
 
   if (node.type !== 'EventDeclaration')
     hash = hash.toString('hex', 0, 4);
