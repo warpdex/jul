@@ -20,7 +20,6 @@ node_modules/
 *.tar.gz
 /test
 test/
-tools/
 .travis.yml
 v8.log
 yarn-error.log

@@ -32,6 +32,12 @@ const onError = (err) => {
   process.exit(1);
 };
 
+// Create vendor directory if it doesn't exist
+if (!fs.existsSync(vendor)) {
+  log('Creating vendor directory: %s', path.relative(cwd, vendor));
+  fs.mkdirSync(vendor, { recursive: true });
+}
+
 for (const name of fs.readdirSync(vendor)) {
   if (name.startsWith('soljson-') && name !== info.name) {
     const file = path.join(vendor, name);
