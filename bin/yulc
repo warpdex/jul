@@ -50,6 +50,7 @@ const HELP = `
     --submit               submit and verify sources to explorer
     --submit-proxy         verify proxy contract for explorer
     --no-metadata          do not append code hash to metadata
+    -I <dir>               add include search path
     -D[name][=[expr]]      macro definition
     -O[level]              optimization level
     -C, --contract <name>  select contract by name
@@ -367,6 +368,7 @@ function parseArgs(argv) {
     output: '-',
     decl: null,
     macros: [],
+    includes: [],
     runs: 0,
     name: null,
     pick: null,
@@ -579,6 +581,17 @@ function parseArgs(argv) {
             options.macros.push([name, expr]);
             break;
         }
+
+        i += 1;
+
+        break;
+      }
+
+      case '-I': {
+        if (!next || next[0] === '-')
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        options.includes.push(path.resolve(next));
 
         i += 1;
 
