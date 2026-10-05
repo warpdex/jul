@@ -52,6 +52,7 @@ const HELP = `
     --no-metadata          do not append code hash to metadata
     -D[name][=[expr]]      macro definition
     -O[level]              optimization level
+    --runs <n>             optimizer runs
     -C, --contract <name>  select contract by name
     --cherry-pick <name>   pick subobject to compile/transform
     --no-builtins          do not include builtins
@@ -603,6 +604,20 @@ function parseArgs(argv) {
 
       case '-O3': {
         options.runs = 2000;
+        break;
+      }
+
+      case '--runs': {
+        if (!next || !/^\d+$/.test(next))
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        options.runs = Number(next);
+
+        if (options.runs > 0xffffffff)
+          throw new Error(`Invalid option for: ${arg}.`);
+
+        i += 1;
+
         break;
       }
 
